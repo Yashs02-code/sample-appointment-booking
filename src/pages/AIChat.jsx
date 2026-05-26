@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Send, Mic, MicOff, Bot, User, Activity, Star } from 'lucide-react';
+import { Send, Mic, MicOff, Bot, User, Activity, Star, Calendar, Trash2 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { symptomsToDoctorMap } from '../data/dummyData';
 import { format } from 'date-fns';
@@ -12,37 +12,99 @@ import { useTranslation } from 'react-i18next';
 import toast from 'react-hot-toast';
 
 
-const STEPS = ['name', 'age', 'gender', 'symptoms', 'doctor', 'type', 'date', 'slot', 'confirm'];
+const STEPS = ['mode', 'name', 'age', 'gender', 'symptoms', 'doctor', 'type', 'date', 'slot', 'confirm'];
 
 // ─── Name Validation ─────────────────────────────────────────────────────────
 const FAKE_NAME_BLOCKLIST = [
-  'yyy', 'xyz', 'xyx', 'abc', 'aaa', 'bbb', 'ccc', 'zzz', 'zzz', 'xxx',
+  'yyy', 'xyz', 'xyx', 'abc', 'aaa', 'bbb', 'ccc', 'zzz', 'xxx',
   'qwe', 'qwerty', 'asdf', 'zxcv', 'test', 'testing', 'demo', 'fake', 'dummy',
   'hello', 'user', 'name', 'someone', 'nobody', 'anonymous', 'temp', 'null', 'none',
   'nnn', 'mmm', 'lll', 'kkk', 'jjj', 'iii', 'hhh', 'ggg', 'fff', 'eee', 'ddd',
+  'john', 'jane', 'test1', 'admin', 'root', 'pass', 'password', 'asdf', 'qwerty',
 ];
 
-function isValidName(val) {
+function validateNameStrict(val) {
   const trimmed = (val || '').trim();
-  if (trimmed.length < 3) return false;
-  // Must contain only letters, spaces, hyphens, apostrophes
-  if (!/^[a-zA-Z\s'\-\.]+$/.test(trimmed)) return false;
-  // Block obvious blocklisted values (check each word)
-  const words = trimmed.toLowerCase().split(/\s+/);
-  for (const word of words) {
-    if (FAKE_NAME_BLOCKLIST.includes(word)) return false;
-    // Reject purely repeated characters (e.g. aaaa, yyyy)
-    if (word.length >= 2 && new Set(word).size === 1) return false;
-    // Each word must be at least 2 chars
-    if (word.length < 2) return false;
+  
+  // Check minimum length
+  if (trimmed.length < 5) {
+    return { valid: false, reason: 'too_short' };
   }
-  // Must have at least one word with 2+ chars
-  if (!words.some(w => w.length >= 2)) return false;
-  return true;
+  
+  // Must contain only letters, spaces, hyphens, apostrophes
+  if (!/^[a-zA-Z\s'\-\.]+$/.test(trimmed)) {
+    return { valid: false, reason: 'invalid_chars' };
+  }
+  
+  const words = trimmed.toLowerCase().split(/\s+/).filter(w => w.length > 0);
+  
+  // Must have at least 2 words (first name + last name)
+  if (words.length < 2) {
+    return { valid: false, reason: 'needs_full_name' };
+  }
+  
+  // Check each word
+  for (const word of words) {
+    // Word minimum 2 chars (but typically real names are 3+)
+    if (word.length < 2) {
+      return { valid: false, reason: 'word_too_short' };
+    }
+    
+    // Check if word is in blocklist
+    if (FAKE_NAME_BLOCKLIST.includes(word)) {
+      return { valid: false, reason: 'blocked_word' };
+    }
+    
+    // Reject purely repeated characters (e.g. "aaa", "zzz")
+    if (word.length >= 2 && new Set(word).size === 1) {
+      return { valid: false, reason: 'repeated_chars' };
+    }
+    
+    // Reject excessive character repetition (more than 50% same char)
+    const charCounts = {};
+    for (const char of word) {
+      charCounts[char] = (charCounts[char] || 0) + 1;
+    }
+    const maxCount = Math.max(...Object.values(charCounts));
+    if (maxCount / word.length > 0.5) {
+      return { valid: false, reason: 'too_many_repeats' };
+    }
+    
+    // Check for at least one vowel and one consonant (realistic names)
+    const hasVowel = /[aeiou]/.test(word);
+    const hasConsonant = /[bcdfghjklmnpqrstvwxyz]/.test(word);
+    if (!hasVowel || !hasConsonant) {
+      return { valid: false, reason: 'unrealistic_pattern' };
+    }
+    
+    // First letter must be uppercase in original input, but accept if user forgot
+    // We'll be lenient here
+  }
+  
+  return { valid: true, reason: null };
+}
+
+function isValidName(val) {
+  return validateNameStrict(val).valid;
+}
+
+function getNameErrorMessage(reason) {
+  const messages = {
+    too_short: '⚠️ Please enter your **full name** (at least 5 characters). Example: Rahul Sharma',
+    invalid_chars: '⚠️ Name should only contain letters, spaces, hyphens, and apostrophes. Please remove numbers or special characters.',
+    needs_full_name: '⚠️ Please enter your **first name AND last name**. Example: John Doe, Priya Mehta, or Raj Kumar',
+    word_too_short: '⚠️ Each name part should be at least 2 characters. Example: Jo Smith, not J Smith',
+    blocked_word: '⚠️ This doesn\'t appear to be a real name. Please enter your **actual full name**.',
+    repeated_chars: '⚠️ Names shouldn\'t have repeated characters. Example: "Aaa" is not valid. Please enter a **real name**.',
+    too_many_repeats: '⚠️ Your name has too many repeated characters. Please enter a **real, authentic name**. Example: Rohit Sharma',
+    unrealistic_pattern: '⚠️ This doesn\'t look like a real name pattern. Please enter your **actual full name**. Example: Rahul, Priya, or Rohan',
+  };
+  return messages[reason] || '⚠️ Please enter your **valid real name**. Example: Your First Name + Last Name';
 }
 
 function getAIMessage(step, t, ctx = {}) {
   const msgs = {
+    mode: t('aichat.select_action') || 'What would you like to do today?',
     name: t('aichat.steps.name'),
     age: t('aichat.steps.age', { name: ctx.name }),
     gender: t('aichat.steps.gender'),
@@ -71,12 +133,12 @@ function formatMessage(text) {
 
 export default function AIChat() {
   const { t } = useTranslation();
-  const { darkMode, doctors, bookAppointment, currentUser } = useApp();
+  const { darkMode, doctors, bookAppointment, currentUser, getUpcomingAppointments, cancelAppointment, rescheduleAppointment } = useApp();
   const navigate = useNavigate();
 
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
-  const [step, setStep] = useState('name');
+  const [step, setStep] = useState('mode');
   const [ctx, setCtx] = useState({});
   const [isTyping, setIsTyping] = useState(false);
   const [suggestedDoctor, setSuggestedDoctor] = useState(null);
@@ -85,6 +147,9 @@ export default function AIChat() {
   const [selectedSlot, setSelectedSlot] = useState(null);
   const [listening, setListening] = useState(false);
   const [done, setDone] = useState(false);
+  const [mode, setMode] = useState(null); // 'book', 'reschedule', 'cancel'
+  const [userAppointments, setUserAppointments] = useState([]);
+  const [selectedAptId, setSelectedAptId] = useState(null);
 
   const scrollRef = useRef();
   const inputRef = useRef();
@@ -97,7 +162,7 @@ export default function AIChat() {
 
   // Initial greeting
   useEffect(() => {
-    addAI(getAIMessage('name', t), 600);
+    addAI(getAIMessage('mode', t), 600);
   }, []);
 
   function addAI(text, delay = 400) {
@@ -168,13 +233,47 @@ export default function AIChat() {
   };
 
   function processStep(val) {
-    if (step === 'name') {
-      if (!isValidName(val)) {
-        addAI(
-          `⚠️ Please enter your **real full name** (e.g., Rahul Sharma, Priya Mehta).\nRandom text or single words are not accepted. Please try again.`,
-          800
-        );
-        return; // Don't advance step
+    if (step === 'mode') {
+      const lowerVal = val.toLowerCase();
+      if (lowerVal.includes('book')) {
+        setMode('book');
+        setStep('name');
+        addAI(getAIMessage('name', t), 1000);
+      } else if (lowerVal.includes('reschedule')) {
+        setMode('reschedule');
+        const upcoming = getUpcomingAppointments();
+        setUserAppointments(upcoming);
+        if (upcoming.length === 0) {
+          setDone(true);
+          addAI('📅 You don\'t have any upcoming appointments to reschedule.', 800);
+        } else {
+          setStep('doctor');
+          addAI(`📅 You have **${upcoming.length}** upcoming appointment(s). Please select which one you'd like to reschedule:`, 800);
+        }
+      } else if (lowerVal.includes('cancel')) {
+        setMode('cancel');
+        const upcoming = getUpcomingAppointments();
+        setUserAppointments(upcoming);
+        if (upcoming.length === 0) {
+          setDone(true);
+          addAI('❌ You don\'t have any upcoming appointments to cancel.', 800);
+        } else {
+          setStep('doctor');
+          addAI(`❌ You have **${upcoming.length}** upcoming appointment(s). Please select which one you'd like to cancel:`, 800);
+        }
+      } else if (lowerVal.includes('check') || lowerVal.includes('available')) {
+        setMode('check');
+        setStep('doctor');
+        addAI('🏥 Which doctor would you like to check available slots for?', 1000);
+      } else {
+        addAI('😊 Please choose: **Book**, **Reschedule**, **Cancel**, or **Check** available slots.', 800);
+      }
+    } else if (step === 'name') {
+      const validation = validateNameStrict(val);
+      if (!validation.valid) {
+        const errorMsg = getNameErrorMessage(validation.reason);
+        addAI(errorMsg, 800);
+        return;
       }
       const newCtx = { ...ctx, name: val };
       setCtx(newCtx);
@@ -197,49 +296,105 @@ export default function AIChat() {
       setStep('doctor');
       addAI(t('aichat.search_docs', { name: candidates[0].name }), 1000);
     } else if (step === 'doctor') {
-      const normalizedInput = val.toLowerCase().replace('dr.', '').trim();
-      const doc = doctors.find(d => 
-        d.id.toLowerCase() === normalizedInput || 
-        d.name.toLowerCase().replace('dr.', '').trim() === normalizedInput ||
-        d.name.toLowerCase().trim() === val.toLowerCase().trim()
-      );
-      
-      if (!doc) {
-        addAI(t('aichat.invalid_doctor') || "I couldn't find that doctor. Please pick one from the list above.");
-        return;
-      }
+      if (mode === 'reschedule' || mode === 'cancel') {
+        // Selecting an appointment to reschedule or cancel
+        const aptIndex = parseInt(val) - 1;
+        if (isNaN(aptIndex) || aptIndex < 0 || aptIndex >= userAppointments.length) {
+          addAI('❌ Invalid selection. Please select a valid appointment number.', 800);
+          return;
+        }
+        const selectedApt = userAppointments[aptIndex];
+        setSelectedAptId(selectedApt.id);
+        const doctor = doctors.find(d => d.id === selectedApt.doctorId);
+        if (mode === 'reschedule') {
+          addAI(`✅ You selected your appointment with **${doctor?.name}** on **${selectedApt.date}** at **${selectedApt.time}**.\n\nWhat new date would you like?`, 1000);
+          setStep('date');
+        } else {
+          addAI(`✅ You selected your appointment with **${doctor?.name}** on **${selectedApt.date}** at **${selectedApt.time}**.\n\nAre you sure you want to cancel this appointment?`, 1000);
+          setStep('confirm');
+        }
+      } else if (mode === 'check') {
+        // Selecting a doctor to check slots
+        const normalizedInput = val.toLowerCase().replace('dr.', '').trim();
+        const doc = doctors.find(d => 
+          d.id.toLowerCase() === normalizedInput || 
+          d.name.toLowerCase().replace('dr.', '').trim() === normalizedInput ||
+          d.name.toLowerCase().trim() === val.toLowerCase().trim()
+        );
+        if (!doc) {
+          addAI(t('aichat.invalid_doctor') || "I couldn't find that doctor. Please pick one from the list above.");
+          return;
+        }
+        setSuggestedDoctor(doc);
+        setCtx({ ...ctx, doctor: doc });
+        setStep('date');
+        addAI(`✅ Checking available slots for **${doc.name}**. What date would you like?`, 1000);
+      } else {
+        // Normal booking flow - selecting a doctor
+        const normalizedInput = val.toLowerCase().replace('dr.', '').trim();
+        const doc = doctors.find(d => 
+          d.id.toLowerCase() === normalizedInput || 
+          d.name.toLowerCase().replace('dr.', '').trim() === normalizedInput ||
+          d.name.toLowerCase().trim() === val.toLowerCase().trim()
+        );
+        
+        if (!doc) {
+          addAI(t('aichat.invalid_doctor') || "I couldn't find that doctor. Please pick one from the list above.");
+          return;
+        }
 
-      const newCtx = { ...ctx, doctor: doc };
-      setCtx(newCtx);
-      setSuggestedDoctor(doc);
-      setStep('type');
-      addAI(t('aichat.doc_choice', { name: doc.name }), 1000);
+        const newCtx = { ...ctx, doctor: doc };
+        setCtx(newCtx);
+        setSuggestedDoctor(doc);
+        setStep('type');
+        addAI(t('aichat.doc_choice', { name: doc.name }), 1000);
+      }
     } else if (step === 'type') {
       const newCtx = { ...ctx, appointmentType: val };
       setCtx(newCtx);
       setStep('date');
       addAI(getAIMessage('date', t, newCtx), 1000);
     } else if (step === 'date') {
-      const doctor = ctx.doctor;
-      const slots = doctor?.slots?.[val] || ['09:00', '10:30', '11:00', '14:00', '15:30'];
-      const bSlots = doctor?.bookedSlots?.[val] || [];
-      const newCtx = { ...ctx, date: val };
-      setCtx(newCtx);
-      setAvailableSlots(slots);
-      setBookedSlots(bSlots);
-      setStep('slot');
-      addAI(getAIMessage('slot', t, { ...newCtx }), 1000);
+      if (mode === 'check') {
+        const doctor = ctx.doctor;
+        const slots = doctor?.slots?.[val] || ['09:00', '10:30', '11:00', '14:00', '15:30'];
+        const bSlots = doctor?.bookedSlots?.[val] || [];
+        const availableCount = slots.filter(s => !bSlots.includes(s)).length;
+        addAI(
+          `📊 On **${val}**, Dr. ${doctor.name} has **${availableCount}** available slot(s) out of ${slots.length}:\n\n${slots.map((s, i) => `${bSlots.includes(s) ? '❌' : '✅'} ${s}`).join('\n')}`,
+          1000
+        );
+        setDone(true);
+      } else if (mode === 'reschedule') {
+        const selectedApt = userAppointments.find(a => a.id === selectedAptId);
+        const doctor = selectedApt ? doctors.find(d => d.id === selectedApt.doctorId) : ctx.doctor;
+        const slots = doctor?.slots?.[val] || ['09:00', '10:30', '11:00', '14:00', '15:30'];
+        const bSlots = doctor?.bookedSlots?.[val] || [];
+        const newCtx = { ...ctx, date: val };
+        setCtx(newCtx);
+        setAvailableSlots(slots);
+        setBookedSlots(bSlots);
+        setStep('slot');
+        addAI(`🕐 Select a new time slot for **${val}**:`, 1000);
+      } else {
+        const doctor = ctx.doctor;
+        const slots = doctor?.slots?.[val] || ['09:00', '10:30', '11:00', '14:00', '15:30'];
+        const bSlots = doctor?.bookedSlots?.[val] || [];
+        const newCtx = { ...ctx, date: val };
+        setCtx(newCtx);
+        setAvailableSlots(slots);
+        setBookedSlots(bSlots);
+        setStep('slot');
+        addAI(getAIMessage('slot', t, { ...newCtx }), 1000);
+      }
     } else if (step === 'slot') {
-      // Check if the selected slot is already booked
       if (bookedSlots.includes(val)) {
-        // Find next available slot
         const nextAvailable = availableSlots.find(s => !bookedSlots.includes(s) && s !== val);
         if (nextAvailable) {
           addAI(
             `⏰ The selected time slot **${val}** is already booked.\n\nI have found the next available slot at **${nextAvailable}**. Would you like to book it instead?`,
             800
           );
-          // Auto-select the next available slot so user can tap it
           setSelectedSlot(nextAvailable);
         } else {
           addAI(
@@ -247,32 +402,63 @@ export default function AIChat() {
             800
           );
         }
-        return; // Don't advance
+        return;
       }
-      const newCtx = { ...ctx, time: val };
-      setCtx(newCtx);
-      setSelectedSlot(val);
-      setStep('confirm');
-      addAI(
-        t('aichat.summary', {
-          name: newCtx.name,
-          age: newCtx.age,
-          gender: newCtx.gender,
-          doctor: newCtx.doctor.name,
-          hospital: newCtx.doctor.hospital,
-          type: newCtx.appointmentType,
-          date: newCtx.date,
-          time: newCtx.time,
-          fee: newCtx.doctor.fee
-        }),
-        1400
-      );
-    } else if (step === 'confirm') {
-      if (val.toLowerCase().startsWith('y') || val.toLowerCase() === 'ok' || val.toLowerCase().includes('यश') || val.toLowerCase().includes('हो')) {
-        processBooking();
+      if (mode === 'reschedule') {
+        // Rescheduling - confirm the new time
+        setStep('confirm');
+        const apt = userAppointments.find(a => a.id === selectedAptId);
+        const doctor = doctors.find(d => d.id === apt.doctorId);
+        addAI(
+          `📅 **New appointment details:**\n\n🏥 Doctor: **${doctor?.name}**\n📅 Date: **${ctx.date}**\n⏰ Time: **${val}**\n\nConfirm rescheduling?`,
+          1000
+        );
+        const newCtx = { ...ctx, time: val };
+        setCtx(newCtx);
       } else {
-        setDone(true);
-        addAI(t('aichat.cancelled'), 700);
+        // Normal booking
+        const newCtx = { ...ctx, time: val };
+        setCtx(newCtx);
+        setSelectedSlot(val);
+        setStep('confirm');
+        addAI(
+          t('aichat.summary', {
+            name: newCtx.name,
+            age: newCtx.age,
+            gender: newCtx.gender,
+            doctor: newCtx.doctor.name,
+            hospital: newCtx.doctor.hospital,
+            type: newCtx.appointmentType,
+            date: newCtx.date,
+            time: newCtx.time,
+            fee: newCtx.doctor.fee
+          }),
+          1400
+        );
+      }
+    } else if (step === 'confirm') {
+      if (mode === 'reschedule') {
+        if (val.toLowerCase().startsWith('y') || val.toLowerCase() === 'ok' || val.toLowerCase().includes('यश') || val.toLowerCase().includes('हो')) {
+          processReschedule();
+        } else {
+          setDone(true);
+          addAI('❌ Rescheduling cancelled.', 700);
+        }
+      } else if (mode === 'cancel') {
+        if (val.toLowerCase().startsWith('y') || val.toLowerCase() === 'ok' || val.toLowerCase().includes('यश') || val.toLowerCase().includes('हो')) {
+          processCancel();
+        } else {
+          setDone(true);
+          addAI('❌ Cancellation cancelled.', 700);
+        }
+      } else {
+        // Normal booking
+        if (val.toLowerCase().startsWith('y') || val.toLowerCase() === 'ok' || val.toLowerCase().includes('यश') || val.toLowerCase().includes('हो')) {
+          processBooking();
+        } else {
+          setDone(true);
+          addAI(t('aichat.cancelled'), 700);
+        }
       }
     }
   }
@@ -296,7 +482,6 @@ export default function AIChat() {
     setDone(true);
     addAI(t('aichat.confirmed', { doctor: ctx.doctor.name, date: ctx.date, time: ctx.time }), 600);
     
-    // Detailed diagnostic toast
     toast.success(`Booking sent to ${ctx.doctor.name} (ID: ${ctx.doctor.id})`, {
       icon: '📡',
       duration: 5000
@@ -308,6 +493,28 @@ export default function AIChat() {
     } else {
       toast.error("Failed to book appointment. Please try again.");
     }
+  }
+
+  async function processReschedule() {
+    setDone(true);
+    addAI(`✅ Your appointment has been rescheduled to **${ctx.date}** at **${ctx.time}**. You'll receive a confirmation email shortly.`, 800);
+    
+    toast.success('Appointment rescheduled! ✅', { icon: '📅', duration: 5000 });
+    
+    await rescheduleAppointment(selectedAptId, ctx.date, ctx.time);
+    
+    setTimeout(() => navigate('/appointments'), 2500);
+  }
+
+  async function processCancel() {
+    setDone(true);
+    addAI(`✅ Your appointment has been cancelled. You'll receive a confirmation email shortly.`, 800);
+    
+    toast.success('Appointment cancelled! ❌', { icon: '🔄', duration: 5000 });
+    
+    await cancelAppointment(selectedAptId);
+    
+    setTimeout(() => navigate('/appointments'), 2500);
   }
 
   // Voice input
@@ -454,14 +661,38 @@ export default function AIChat() {
 
           {/* Quick reply chips */}
           {!done && !isTyping && (
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} style={{ marginLeft: 42, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} style={{ marginLeft: 42, display: 'flex', flexWrap: 'wrap', gap: 8, flexDirection: 'column' }}>
+              {step === 'mode' && (
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, maxWidth: 350 }}>
+                  {[
+                    { icon: '🗓', label: 'Book', color: '#2563eb', action: 'book' },
+                    { icon: '🔄', label: 'Reschedule', color: '#7c3aed', action: 'reschedule' },
+                    { icon: '❌', label: 'Cancel', color: '#ef4444', action: 'cancel' },
+                    { icon: '🔍', label: 'Check Slots', color: '#10b981', action: 'check' },
+                  ].map(qa => (
+                    <motion.button key={qa.action}
+                      whileHover={{ scale: 1.05, y: -2 }} whileTap={{ scale: 0.95 }}
+                      onClick={() => { addUser(qa.label); processStep(qa.action); }}
+                      style={{
+                        padding: '16px', borderRadius: 16, border: `2px solid ${qa.color}40`,
+                        background: darkMode ? `${qa.color}12` : `${qa.color}08`,
+                        cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8,
+                        boxShadow: `0 4px 16px ${qa.color}15`,
+                      }}
+                    >
+                      <span style={{ fontSize: 24 }}>{qa.icon}</span>
+                      <span style={{ fontSize: 12, fontWeight: 700, color: qa.color }}>{qa.label}</span>
+                    </motion.button>
+                  ))}
+                </div>
+              )}
               {step === 'gender' && genderOptions.map(g => (
                 <motion.button key={g} whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }} onClick={() => quickReply(g)}
                   style={{ padding: '8px 18px', borderRadius: 20, border: '1.5px solid #2563eb', background: 'transparent', color: '#2563eb', cursor: 'pointer', fontWeight: 600, fontSize: 13, fontFamily: 'Inter' }}>
                   {g}
                 </motion.button>
               ))}
-              {step === 'doctor' && ctx.candidates && (
+              {step === 'doctor' && mode === 'book' && ctx.candidates && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 10, width: '100%', maxWidth: 350 }}>
                   {ctx.candidates.map((doc, idx) => (
                     <motion.div key={doc.id}
@@ -513,6 +744,75 @@ export default function AIChat() {
                   }}>{t('aichat.none_of_these')}</button>
                 </div>
               )}
+              {step === 'doctor' && (mode === 'reschedule' || mode === 'cancel') && userAppointments.length > 0 && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10, width: '100%', maxWidth: 380 }}>
+                  {userAppointments.map((apt, idx) => {
+                    const doctor = doctors.find(d => d.id === apt.doctorId);
+                    const isCancel = mode === 'cancel';
+                    const actionColor = isCancel ? '#ef4444' : '#7c3aed';
+                    return (
+                      <motion.div key={apt.id}
+                        initial={{ opacity: 0, x: -20 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        transition={{ delay: idx * 0.1 }}
+                        whileHover={{ x: 5, scale: 1.02 }}
+                        whileTap={{ scale: 0.98 }}
+                        onClick={() => quickReply((idx + 1).toString())}
+                        style={{
+                          padding: '14px', borderRadius: 16, background: cardBg,
+                          border: `1.5px solid ${actionColor}40`,
+                          cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 12,
+                          boxShadow: `0 4px 16px ${actionColor}10`,
+                        }}>
+                        <div style={{
+                          width: 40, height: 40, borderRadius: 10,
+                          background: `linear-gradient(135deg, ${actionColor}, ${actionColor}66)`,
+                          color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, fontSize: 14, flexShrink: 0
+                        }}>{idx + 1}</div>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontWeight: 700, fontSize: 13, color: darkMode ? '#f1f5f9' : '#0f172a' }}>{doctor?.name}</div>
+                          <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>📅 {apt.date} at {apt.time}</div>
+                        </div>
+                        <div style={{ fontSize: 11, fontWeight: 600, color: actionColor }}>
+                          {isCancel ? '❌ Cancel' : '🔄 Reschedule'}
+                        </div>
+                      </motion.div>
+                    );
+                  })}
+                </div>
+              )}
+              {step === 'doctor' && mode === 'check' && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10, width: '100%', maxWidth: 350 }}>
+                  {doctors.slice(0, 5).map((doc, idx) => (
+                    <motion.div key={doc.id}
+                      initial={{ opacity: 0, x: -20 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      transition={{ delay: idx * 0.1 }}
+                      whileHover={{ x: 5, scale: 1.02 }}
+                      whileTap={{ scale: 0.98 }}
+                      onClick={() => quickReply(doc.name)}
+                      style={{
+                        padding: '14px', borderRadius: 16, background: cardBg,
+                        border: `1px solid ${darkMode ? 'rgba(255,255,255,0.1)' : 'rgba(37,99,235,0.1)'}`,
+                        cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 12,
+                        boxShadow: '0 4px 16px rgba(0,0,0,0.06)',
+                      }}>
+                      <div style={{
+                        width: 40, height: 40, borderRadius: 10,
+                        background: `linear-gradient(135deg, ${doc.avatarColor}, ${doc.avatarColor}88)`,
+                        color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, fontSize: 14, flexShrink: 0
+                      }}>{doc.avatar}</div>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontWeight: 700, fontSize: 13, color: darkMode ? '#f1f5f9' : '#0f172a' }}>{doc.name}</div>
+                        <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>{doc.specialty}</div>
+                      </div>
+                      <div style={{ textAlign: 'right' }}>
+                        <div style={{ fontSize: 11, fontWeight: 700, color: '#10b981' }}>₹{doc.fee}</div>
+                      </div>
+                    </motion.div>
+                  ))}
+                </div>
+              )}
               {step === 'type' && ['Check-up', 'Consultation'].map(type => (
                 <motion.button key={type} whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }} onClick={() => quickReply(type)}
                   style={{ padding: '8px 18px', borderRadius: 20, border: '1.5px solid #7c3aed', background: 'transparent', color: '#7c3aed', cursor: 'pointer', fontWeight: 600, fontSize: 13, fontFamily: 'Inter' }}>
@@ -525,7 +825,7 @@ export default function AIChat() {
                   📅 {d}
                 </motion.button>
               ))}
-              {step === 'confirm' && [t('aichat.yes_confirm'), t('aichat.no_cancel')].map(c => (
+              {step === 'confirm' && (mode === 'book' || !mode) && [t('aichat.yes_confirm'), t('aichat.no_cancel')].map(c => (
                 <motion.button key={c} whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }} onClick={() => quickReply(c)}
                   style={{
                     padding: '10px 20px', borderRadius: 20, border: 'none', cursor: 'pointer',
@@ -535,6 +835,18 @@ export default function AIChat() {
                     boxShadow: c === t('aichat.yes_confirm') ? '0 4px 16px rgba(16,185,129,0.4)' : 'none',
                   }}>
                   {c === t('aichat.yes_confirm') ? '✅ ' : '❌ '}{c}
+                </motion.button>
+              ))}
+              {step === 'confirm' && (mode === 'reschedule' || mode === 'cancel') && ['Yes', 'No'].map(c => (
+                <motion.button key={c} whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }} onClick={() => quickReply(c)}
+                  style={{
+                    padding: '10px 20px', borderRadius: 20, border: 'none', cursor: 'pointer',
+                    background: c === 'Yes' ? (mode === 'cancel' ? 'linear-gradient(135deg, #ef4444, #dc2626)' : 'linear-gradient(135deg, #7c3aed, #6d28d9)') : 'rgba(239,68,68,0.15)',
+                    color: c === 'Yes' ? 'white' : '#ef4444',
+                    fontWeight: 700, fontSize: 14, fontFamily: 'Inter',
+                    boxShadow: c === 'Yes' ? `0 4px 16px ${mode === 'cancel' ? 'rgba(239,68,68,0.4)' : 'rgba(124,58,237,0.4)'}` : 'none',
+                  }}>
+                  {c === 'Yes' ? '✅ ' : '❌ '}{c}
                 </motion.button>
               ))}
             </motion.div>
