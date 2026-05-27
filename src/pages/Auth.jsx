@@ -11,9 +11,8 @@ import {
   updateProfile,
   sendPasswordResetEmail
 } from 'firebase/auth';
-import { auth, googleProvider, db } from '../firebase';
+import { auth, googleProvider } from '../firebase';
 import { GoogleAuthProvider } from 'firebase/auth';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { useApp } from '../context/AppContext';
 import { useTranslation } from 'react-i18next';
 import toast from 'react-hot-toast';
@@ -59,14 +58,14 @@ export default function Auth() {
         if (credential?.accessToken) saveGoogleAccessToken(credential.accessToken);
 
         setLoading(true);
-        const userDoc = await getDoc(doc(db, 'users', user.uid));
-        if (!userDoc.exists()) {
+        const res = await fetch(`/api/users?uid=${user.uid}`);
+        const userProfile = res.ok ? await res.json() : { exists: false };
+        if (!userProfile.exists) {
           setGoogleUser(user);
           setShowRoleSelection(true);
         } else {
-          const userData = userDoc.data();
           toast.success(t('auth.google_success'));
-          navigate(userData.role === 'doctor' ? '/doctor-dashboard' : '/home');
+          navigate(userProfile.role === 'doctor' ? '/doctor-dashboard' : '/home');
         }
       } catch (err) {
         if (err.code !== 'auth/no-current-user') {
@@ -107,14 +106,22 @@ export default function Auth() {
         const userCredential = await createUserWithEmailAndPassword(auth, form.email, form.password);
         await updateProfile(userCredential.user, { displayName: form.name });
 
-        // Save user profile to Firestore
-        await setDoc(doc(db, 'users', userCredential.user.uid), {
-          name: form.name,
-          email: form.email,
-          phone: form.phone,
-          role: role,
-          createdAt: new Date().toISOString(),
+        // Save user profile to MongoDB Atlas via API
+        const userProfileRes = await fetch('/api/users', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            uid: userCredential.user.uid,
+            name: form.name,
+            email: form.email,
+            phone: form.phone,
+            role: role
+          })
         });
+
+        if (!userProfileRes.ok) {
+          throw new Error('Failed to save profile to database');
+        }
 
         toast.success(t('auth.account_created'));
       }
@@ -122,8 +129,9 @@ export default function Auth() {
       // Check user role for redirection
       const user = auth.currentUser;
       if (user) {
-        const userDoc = await getDoc(doc(db, 'users', user.uid));
-        const finalRole = userDoc.exists() ? userDoc.data().role : 'patient';
+        const res = await fetch(`/api/users?uid=${user.uid}`);
+        const userProfile = res.ok ? await res.json() : { exists: false };
+        const finalRole = userProfile.exists ? userProfile.role : 'patient';
         navigate(finalRole === 'doctor' ? '/doctor-dashboard' : '/home');
       }
     } catch (error) {
@@ -156,9 +164,10 @@ export default function Auth() {
       const credential = GoogleAuthProvider.credentialFromResult(result);
       if (credential?.accessToken) saveGoogleAccessToken(credential.accessToken);
 
-      // Check if user exists in Firestore
-      const userDoc = await getDoc(doc(db, 'users', user.uid));
-      if (!userDoc.exists()) {
+      // Check if user exists in MongoDB Atlas via API
+      const res = await fetch(`/api/users?uid=${user.uid}`);
+      const userProfile = res.ok ? await res.json() : { exists: false };
+      if (!userProfile.exists) {
         // New user — show role selection
         setGoogleUser(user);
         setShowRoleSelection(true);
@@ -166,9 +175,8 @@ export default function Auth() {
         return;
       }
 
-      const userData = userDoc.data();
       toast.success(t('auth.google_success'));
-      navigate(userData.role === 'doctor' ? '/doctor-dashboard' : '/home');
+      navigate(userProfile.role === 'doctor' ? '/doctor-dashboard' : '/home');
     } catch (error) {
       console.error('Google Sign-In error:', error);
       if (error.code === 'auth/popup-blocked') {
@@ -195,13 +203,22 @@ export default function Auth() {
 
     setLoading(true);
     try {
-      await setDoc(doc(db, 'users', googleUser.uid), {
-        name: googleUser.displayName,
-        email: googleUser.email,
-        phone: googleUser.phoneNumber || '',
-        role: selectedRole,
-        createdAt: new Date().toISOString(),
+      const userProfileRes = await fetch('/api/users', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          uid: googleUser.uid,
+          name: googleUser.displayName,
+          email: googleUser.email,
+          phone: googleUser.phoneNumber || '',
+          role: selectedRole
+        })
       });
+
+      if (!userProfileRes.ok) {
+        throw new Error('Failed to save profile to database');
+      }
+
       toast.success(t('auth.account_created'));
       setShowRoleSelection(false);
       navigate(selectedRole === 'doctor' ? '/doctor-dashboard' : '/home');

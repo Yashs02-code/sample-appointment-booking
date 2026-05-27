@@ -1,7 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
-import { collection, onSnapshot, query, orderBy, addDoc, updateDoc, doc, getDocs, getDoc, setDoc } from 'firebase/firestore';
-import { auth, db } from '../firebase';
+import { auth } from '../firebase';
 import { doctors as defaultDoctors, sampleAppointments, DOCTOR_EMAIL_MAP } from '../data/dummyData';
 import toast from 'react-hot-toast';
 import { sendBookingConfirmationEmail } from '../utils/emailNotification';
@@ -53,49 +52,35 @@ export function AppProvider({ children }) {
     new Date(b.bookedAt || 0) - new Date(a.bookedAt || 0)
   );
 
-  // Firestore Real-time Sync
+  // MongoDB Atlas Sync via Vercel Serverless Function
   useEffect(() => {
-    let unsubscribe = () => {};
-    setSyncStatus('connecting');
-    
-    try {
-      const q = query(collection(db, 'appointments'), orderBy('bookedAt', 'desc'));
-      unsubscribe = onSnapshot(q, (snapshot) => {
-        const apts = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    let intervalId;
+    const fetchAppointments = async () => {
+      try {
+        const res = await fetch('/api/appointments');
+        if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
+        const apts = await res.json();
         const now = new Date().toLocaleTimeString();
         setLastSync(now);
         setSyncStatus('synced');
         setSyncError(null);
-        
-        console.log(`📊 [Sync] Data Received at ${now}: ${apts.length} appointments.`);
-        toast.dismiss('sync-toast');
-        
-        if (apts.length === 0) {
-          console.warn("⚠️ [Sync] The appointments collection is EMPTY in Firestore.");
-        }
-        
         setAppointments(apts);
-      }, (error) => {
-        console.error("🔥 [Sync] Firestore snapshot error:", error);
+        toast.dismiss('sync-toast');
+      } catch (error) {
+        console.error("🔥 [Sync] MongoDB fetch error:", error);
         setSyncStatus('error');
         setSyncError(error.message);
         toast.dismiss('sync-toast');
+      }
+    };
 
-        if (error.code === 'permission-denied') {
-          console.error("❌ [PERM] Access Denied! Please check Firestore Rules.");
-          toast.error("Database access denied (Code 7). Check your permissions!", { duration: 6000 });
-        } else {
-          toast.error("Sync Error: " + error.code);
-        }
-      });
+    setSyncStatus('connecting');
+    fetchAppointments();
 
-      // No auto-seeding here to keep things clean for cross-device sync testing
-    } catch (e) {
-      console.error("🔥 [Sync] Connection error:", e);
-      setSyncStatus('error');
-    }
+    // Poll every 8 seconds for new bookings
+    intervalId = setInterval(fetchAppointments, 8000);
 
-    return () => unsubscribe();
+    return () => clearInterval(intervalId);
   }, [syncTrigger]);
 
   // Auth state listener - this is the primary gate for loading
@@ -103,15 +88,19 @@ export function AppProvider({ children }) {
     let authResolved = false;
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       if (user) {
-        // Fetch user profile from Firestore
+        // Fetch user profile from MongoDB Atlas via API
         let role = 'patient'; // Default
+        let dbPhone = '';
+        let dbName = '';
         try {
-          const userDoc = await getDoc(doc(db, 'users', user.uid));
-          if (userDoc.exists()) {
-            role = userDoc.data().role || 'patient';
-          } else {
-            // New user or legacy user without profile, default to patient
-            // We set it later if it's a first-time Google login via UI
+          const response = await fetch(`/api/users?uid=${user.uid}`);
+          if (response.ok) {
+            const data = await response.json();
+            if (data.exists) {
+              role = data.role || 'patient';
+              dbPhone = data.phone || '';
+              dbName = data.name || '';
+            }
           }
         } catch (e) {
           console.error("Error fetching user profile:", e);
@@ -127,10 +116,10 @@ export function AppProvider({ children }) {
 
         setCurrentUser({
           id: user.uid,
-          name: user.displayName || 'Demo User',
+          name: dbName || user.displayName || 'Demo User',
           email: user.email,
-          phone: user.phoneNumber || '+91 98765 43210',
-          avatar: (user.displayName || user.email || 'U').charAt(0).toUpperCase(),
+          phone: dbPhone || user.phoneNumber || '+91 98765 43210',
+          avatar: (dbName || user.displayName || user.email || 'U').charAt(0).toUpperCase(),
           role: role,
           doctorId: doctorProfile?.id || null 
         });
@@ -251,8 +240,13 @@ export function AppProvider({ children }) {
     };
 
     try {
-      const docRef = await addDoc(collection(db, 'appointments'), newAptData);
-      const result = { id: docRef.id, ...newAptData };
+      const response = await fetch('/api/appointments', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newAptData)
+      });
+      if (!response.ok) throw new Error('Failed to save to MongoDB Atlas');
+      const result = await response.json();
 
       // 1️⃣ SYNC TO GOOGLE SHEET (fire-and-forget)
       syncToGoogleSheet(result);
@@ -318,8 +312,13 @@ export function AppProvider({ children }) {
       setLocalAppointments(prev => prev.map(a => a.id === aptId ? { ...a, status: 'cancelled' } : a));
     } else {
       try {
-        const aptRef = doc(db, 'appointments', aptId);
-        await updateDoc(aptRef, { status: 'cancelled' });
+        const response = await fetch('/api/update-appointment', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: aptId, status: 'cancelled' })
+        });
+        if (!response.ok) throw new Error('Failed to update status');
+        refreshSync();
       } catch (e) {
         console.error("Error cancelling: ", e);
       }
@@ -337,8 +336,13 @@ export function AppProvider({ children }) {
       setLocalAppointments(prev => prev.map(a => a.id === aptId ? { ...a, date: newDate, time: newTime } : a));
     } else {
       try {
-        const aptRef = doc(db, 'appointments', aptId);
-        await updateDoc(aptRef, { date: newDate, time: newTime });
+        const response = await fetch('/api/update-appointment', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: aptId, date: newDate, time: newTime })
+        });
+        if (!response.ok) throw new Error('Failed to reschedule');
+        refreshSync();
       } catch (e) {
         console.error("Error rescheduling: ", e);
       }
@@ -356,8 +360,13 @@ export function AppProvider({ children }) {
       setLocalAppointments(prev => prev.map(a => a.id === aptId ? { ...a, status: newStatus } : a));
     } else {
       try {
-        const aptRef = doc(db, 'appointments', aptId);
-        await updateDoc(aptRef, { status: newStatus });
+        const response = await fetch('/api/update-appointment', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: aptId, status: newStatus })
+        });
+        if (!response.ok) throw new Error('Failed to update status');
+        refreshSync();
       } catch (e) {
         console.error("Error updating status: ", e);
       }

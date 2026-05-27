@@ -1,5 +1,4 @@
-import { doc, getDoc } from 'firebase/firestore';
-import { db } from '../firebase';
+// Direct Firestore imports removed
 import toast from 'react-hot-toast';
 import SkeletonLoader from '../components/SkeletonLoader';
 import { useParams, useNavigate } from 'react-router-dom';
@@ -33,12 +32,12 @@ export default function Confirmation() {
         return;
       }
 
-      // Fallback: fetch directly from Firestore
+      // Fallback: fetch directly from MongoDB Atlas API
       try {
-        const aptDocRef = doc(db, 'appointments', id);
-        const docSnap = await getDoc(aptDocRef);
-        if (docSnap.exists()) {
-          setLocalApt({ id: docSnap.id, ...docSnap.data() });
+        const res = await fetch(`/api/appointment?id=${id}`);
+        if (res.ok) {
+          const data = await res.json();
+          setLocalApt(data);
         }
       } catch (err) {
         console.error("Error fetching appointment:", err);
