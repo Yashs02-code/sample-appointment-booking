@@ -248,6 +248,9 @@ export function AppProvider({ children }) {
       if (!response.ok) throw new Error('Failed to save to MongoDB Atlas');
       const result = await response.json();
 
+      // Optimistic UI Update: immediately insert into local React state
+      setAppointments(prev => [result, ...prev]);
+
       // 1️⃣ SYNC TO GOOGLE SHEET (fire-and-forget)
       syncToGoogleSheet(result);
 
@@ -311,6 +314,8 @@ export function AppProvider({ children }) {
     if (aptId.startsWith('local_')) {
       setLocalAppointments(prev => prev.map(a => a.id === aptId ? { ...a, status: 'cancelled' } : a));
     } else {
+      // Optimistic UI Update: update status instantly
+      setAppointments(prev => prev.map(a => a.id === aptId ? { ...a, status: 'cancelled' } : a));
       try {
         const response = await fetch('/api/update-appointment', {
           method: 'POST',
@@ -335,6 +340,8 @@ export function AppProvider({ children }) {
     if (aptId.startsWith('local_')) {
       setLocalAppointments(prev => prev.map(a => a.id === aptId ? { ...a, date: newDate, time: newTime } : a));
     } else {
+      // Optimistic UI Update: update date/time instantly
+      setAppointments(prev => prev.map(a => a.id === aptId ? { ...a, date: newDate, time: newTime } : a));
       try {
         const response = await fetch('/api/update-appointment', {
           method: 'POST',
@@ -359,6 +366,8 @@ export function AppProvider({ children }) {
     if (aptId.startsWith('local_')) {
       setLocalAppointments(prev => prev.map(a => a.id === aptId ? { ...a, status: newStatus } : a));
     } else {
+      // Optimistic UI Update: update status instantly
+      setAppointments(prev => prev.map(a => a.id === aptId ? { ...a, status: newStatus } : a));
       try {
         const response = await fetch('/api/update-appointment', {
           method: 'POST',
